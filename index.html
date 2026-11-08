@@ -1060,10 +1060,9 @@ CREATE POLICY "anon_all" ON ksb_store FOR ALL TO anon USING (true) WITH CHECK (t
 
   <div class="sec">
     <h3>☁️ OpenRouter Cloud AI (Primary Backend)</h3>
-    <p style="color:#94a3b8;font-size:11px;margin-bottom:10px">OpenRouter provides unified access to Gemini, Claude, Llama, GPT-4o and 200+ models via one API key. This is the default cloud AI for Sugartrends when Ollama is offline. Your key is stored in browser localStorage — never transmitted to our servers.</p>
+    <p style="color:#94a3b8;font-size:11px;margin-bottom:10px">OpenRouter provides unified access to multiple AI models. The API key is kept in a server-side Netlify environment variable and is never entered or stored in this browser.</p>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:9px;margin-bottom:10px">
-      <div><label>OpenRouter API Key</label><input id="orKey" type="password" value="" placeholder="sk-or-v1-..."></div>
       <div><label>Model</label>
         <select id="orModelSelect">
           <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct (default)</option>
@@ -1074,6 +1073,10 @@ CREATE POLICY "anon_all" ON ksb_store FOR ALL TO anon USING (true) WITH CHECK (t
         </select>
       </div>
     </div>
+    <label style="display:flex;align-items:center;gap:7px;font-size:11px;color:#cbd5e1;margin-bottom:10px">
+      <input id="orWebSearch" type="checkbox" style="width:auto;margin:0">
+      Enable live web search (may add OpenRouter/Exa charges)
+    </label>
 
     <div class="row" style="margin-bottom:8px">
       <button onclick="saveOpenRouterConfig()">💾 Save Config</button>
@@ -1086,11 +1089,11 @@ CREATE POLICY "anon_all" ON ksb_store FOR ALL TO anon USING (true) WITH CHECK (t
 
     <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;font-size:11px;line-height:1.9;color:#cbd5e1;margin-top:10px">
       <strong style="color:#0ea5e9">How it works:</strong><br>
-      1. Your API key is saved in <strong>localStorage only</strong> — it never hits our Netlify functions or Supabase.<br>
-      2. The dashboard calls OpenRouter directly from your browser (CORS-enabled).<br>
+      1. Add <code>OPENROUTER_API_KEY</code> to Netlify environment variables with Functions runtime scope.<br>
+      2. The dashboard sends requests to a Netlify Function; only that server-side function reads the key.<br>
       3. If OpenRouter fails, it auto-falls back to Gemini (Google AI Studio key).<br>
       4. If you also run Ollama locally, local AI takes priority for complete data privacy.<br>
-      <span style="color:#64748b">Priority: Ollama (local) → OpenRouter (cloud) → Gemini (fallback). All three can coexist.</span>
+      <span style="color:#64748b">Priority: Ollama (local) → OpenRouter (cloud) → Gemini (fallback). Set an OpenRouter spend limit because this site is publicly reachable.</span>
     </div>
   </div>
 
@@ -2132,15 +2135,11 @@ function disableOllama(){
 
 // ─── OpenRouter UI handlers ───
 function saveOpenRouterConfig(){
-  const key = document.getElementById('orKey').value.trim();
   const model = document.getElementById('orModelSelect').value;
-  if(key && key.startsWith('sk-or-')){
-    localStorage.setItem('openrouter_api_key', key);
-    localStorage.setItem('openrouter_model', model);
-    localStorage.setItem('openrouter_enabled', 'true');
-  }else{
-    localStorage.setItem('openrouter_enabled', 'false');
-  }
+  const webSearch = document.getElementById('orWebSearch').checked;
+  localStorage.setItem('openrouter_model', model);
+  localStorage.setItem('openrouter_websearch', String(webSearch));
+  localStorage.setItem('openrouter_enabled', 'true');
   testOpenRouterConnection();
   M('OpenRouter config saved', 'mok');
 }
@@ -2149,7 +2148,6 @@ async function testOpenRouterConnection(){
   const statusEl = document.getElementById('openrouterStatus');
   const cfg = openrouterGetConfig();
   if(!cfg.enabled){ statusEl.style.display='block'; statusEl.style.background='rgba(239,68,68,.1)'; statusEl.style.color='#fca5a5'; statusEl.style.border='1px solid #ef4444'; statusEl.textContent='❌ OpenRouter is disabled.'; return; }
-  if(!cfg.useProxy && (!cfg.apiKey || !cfg.apiKey.startsWith('sk-or-'))){ statusEl.style.display='block'; statusEl.style.background='rgba(239,68,68,.1)'; statusEl.style.color='#fca5a5'; statusEl.style.border='1px solid #ef4444'; statusEl.textContent='❌ No valid API key. Paste your sk-or-v1-... key above.'; return; }
 
   statusEl.style.display='block';
   statusEl.style.background='rgba(14,165,233,.1)';
@@ -2189,10 +2187,10 @@ function disableOpenRouter(){
 
 function loadOpenRouterUI(){
   const cfg = openrouterGetConfig();
-  const keyEl = document.getElementById('orKey');
   const modelEl = document.getElementById('orModelSelect');
-  if(keyEl) keyEl.value = cfg.apiKey || '';
+  const webSearchEl = document.getElementById('orWebSearch');
   if(modelEl) modelEl.value = cfg.model || OPENROUTER_MODELS[0];
+  if(webSearchEl) webSearchEl.checked = cfg.webSearchEnabled;
 }
 
 
@@ -5952,8 +5950,6 @@ const GEMINI_API_KEY = localStorage.getItem('gemini_api_key') || '';
 // GPT-4o and 200+ models via one API key. This is the default
 // cloud path for Sukari Trends AI.
 //
-const OPENROUTER_API_KEY = localStorage.getItem('openrouter_api_key') || '';
-const OPENROUTER_URL     = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_MODELS  = [
   'meta-llama/llama-3.3-70b-instruct',
   'google/gemini-2.0-flash-001',
@@ -5966,31 +5962,27 @@ function openrouterGetConfig(){
   return {
     model:   localStorage.getItem('openrouter_model') || OPENROUTER_MODELS[0],
     enabled: localStorage.getItem('openrouter_enabled') !== 'false',
-    apiKey:  localStorage.getItem('openrouter_api_key') || OPENROUTER_API_KEY,
-    useProxy: !(localStorage.getItem('openrouter_api_key')),
+    useProxy: true,
     // Lets the model trigger a REAL live web search (via OpenRouter's
     // server-side openrouter:web_search tool, powered by Exa) when IT
     // decides a question needs current info the dashboard/cache doesn't
-    // have. Default ON since that's what was asked for — but note this
+    // have. This is an explicit opt-in because it can incur extra charges.
     // has a real per-search cost (~$0.007+ via Exa, on top of normal
     // token cost) charged to your OpenRouter account, unlike everything
     // else in this proxy. Toggle off via ⚙️ Configure if you'd rather
     // keep this at zero incremental cost.
-    webSearchEnabled: localStorage.getItem('openrouter_websearch') !== 'false'
+    webSearchEnabled: localStorage.getItem('openrouter_websearch') === 'true'
   };
 }
 
 function openrouterConfigure(){
   const cfg = openrouterGetConfig();
-  const model = prompt('OpenRouter model ('+OPENROUTER_MODELS.join(', ')+'):', cfg.model);
-  if(model && model.includes('/')) localStorage.setItem('openrouter_model', model);
-  const apiKey = prompt('OpenRouter API key (get free at https://openrouter.ai/keys):', cfg.apiKey);
-  if(apiKey && apiKey.trim().startsWith('sk-or-')){
-    localStorage.setItem('openrouter_api_key', apiKey.trim());
-  }
+  const model = prompt('Choose a supported OpenRouter model ('+OPENROUTER_MODELS.join(', ')+'):', cfg.model);
+  if(model && OPENROUTER_MODELS.includes(model.trim())) localStorage.setItem('openrouter_model', model.trim());
+  else if(model) chartBotAddBotMessage('⚠️ Unsupported model. Choose one of the listed models.', null, null);
   const enabled = confirm('Enable OpenRouter as primary cloud AI?\n\nOK = enabled (recommended)\nCancel = disabled');
   localStorage.setItem('openrouter_enabled', String(enabled));
-  chartBotAddBotMessage('⚙️ OpenRouter config updated: model='+(model||cfg.model)+', key='+(apiKey?'set':'unchanged')+', enabled='+enabled, null, null);
+  chartBotAddBotMessage('⚙️ OpenRouter config updated: model='+(model||cfg.model)+', enabled='+enabled+'. The API key is managed server-side.', null, null);
 }
 
 async function openrouterFetch(messages, options={}, timeoutMs=30000){
@@ -6030,52 +6022,19 @@ async function openrouterFetch(messages, options={}, timeoutMs=30000){
     return text + '\n\n[Web sources found via live search — saved to DB]\n' + list;
   }
 
-  // Default path: proxy through ksb-autoload.onrender.com so the real
-  // OpenRouter key never ships in this file. This works no matter where the
-  // dashboard HTML itself is hosted, since it's an absolute URL to a
-  // separately-deployed backend, not a relative /api/* path tied to one host.
-  if(cfg.useProxy){
-    const res = await fetch(`${KSB_AUTOLOAD_URL}/api/openrouter-chat`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if(!res.ok){
-      const err = await res.json().catch(()=>({}));
-      throw new Error(err.error || err.detail || `Proxy HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    if(data.error) throw new Error(data.error);
-    return formatWithCitations(data.choices?.[0]?.message) || data.text || '';
-  }
-
-  // Fallback: direct client-side call using a key YOU explicitly saved via
-  // ⚙️ Configure. Only reached if a personal key is set — never uses a
-  // key baked into this file, since none is baked in.
-  if(!cfg.apiKey || !cfg.apiKey.startsWith('sk-or-')){
-    throw new Error('No proxy reachable and no personal OpenRouter key set — see ⚙️ Configure.');
-  }
-  const res = await fetch(OPENROUTER_URL, {
+  const res = await fetch('/.netlify/functions/openrouter-chat', {
     method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + cfg.apiKey,
-      'Content-Type':  'application/json',
-      'HTTP-Referer':  'https://sukaritrends.netlify.app/',
-      'X-Title':       'Sukari Trends KSB Dashboard'
-    },
+    headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs)
   });
-
   if(!res.ok){
     const err = await res.json().catch(()=>({}));
-    throw new Error(err.error?.message || `OpenRouter HTTP ${res.status}`);
+    throw new Error(err.error || err.detail || `Netlify Function HTTP ${res.status}`);
   }
-
   const data = await res.json();
-  if(data.error) throw new Error(data.error.message || 'OpenRouter error');
-  return formatWithCitations(data.choices?.[0]?.message) || '';
+  if(data.error) throw new Error(data.error.message || data.error);
+  return formatWithCitations(data.choices?.[0]?.message) || data.text || '';
 }
 
 async function openrouterChat(userMessage){
@@ -6084,11 +6043,6 @@ async function openrouterChat(userMessage){
     chartBotAddBotMessage('⚠️ OpenRouter is disabled. Click ⚙️ Configure to enable it.', null, null);
     return;
   }
-  if(!cfg.useProxy && (!cfg.apiKey || !cfg.apiKey.startsWith('sk-or-'))){
-    chartBotAddBotMessage('🔑 OpenRouter API key missing or invalid. Set it via ⚙️ Configure → OpenRouter.', null, null);
-    return;
-  }
-
   const loading = chartBotAddBotMessage('☁️ OpenRouter AI thinking…', null, null);
 
   const systemPrompt = grokBuildSystemPrompt();
